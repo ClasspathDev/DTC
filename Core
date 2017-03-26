@@ -1,0 +1,429 @@
+package com.enduniverse.dtcvillagers;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.UUID;
+ 
+import org.bukkit.Bukkit;
+import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.entity.EntityType;
+import org.bukkit.entity.Player;
+import org.bukkit.entity.Villager;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.entity.EntityDamageEvent;
+import org.bukkit.event.inventory.InventoryAction;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.player.AsyncPlayerChatEvent;
+import org.bukkit.event.player.PlayerInteractEntityEvent;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.MerchantRecipe;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
+import org.bukkit.scheduler.BukkitRunnable;
+ 
+import net.md_5.bungee.api.ChatColor;
+ 
+public class DTCVillagers extends JavaPlugin implements Listener{
+	
+	public ArrayList<Shop> shops = new ArrayList<Shop>();
+    public HashMap<UUID, Shop> current = new HashMap<UUID, Shop>();
+    public HashMap<UUID, Shop> editing = new HashMap<UUID, Shop>();
+    public HashMap<UUID, Shop> rename = new HashMap<UUID, Shop>();
+    public HashMap<UUID, Shop> copy = new HashMap<UUID, Shop>();
+    public HashMap<UUID, Villager> temp = new HashMap<UUID, Villager>();
+ 
+    @Override
+    public void onEnable(){
+        Bukkit.getPluginManager().registerEvents(this, this);
+ 
+        reload();
+ 
+        new BukkitRunnable(){
+ 
+            @Override
+            public void run() {
+                for(Villager v : temp.values()){
+                    v.addPotionEffect(new PotionEffect(PotionEffectType.INVISIBILITY, 1000, 1000));
+                }
+                for(Shop s : shops){
+                    if(s.villager == null || s.loc == null) continue;
+                    s.villager.teleport(s.loc);
+                    s.villager.addPotionEffect(new PotionEffect(PotionEffectType.SLOW, 1000, 1000));
+                }
+            }
+ 
+ 
+ 
+        }.runTaskTimer(this, 20, 20);
+    }
+ 
+    @Override
+    public void onDisable(){
+        remove();
+    }
+ 
+    public void load(){
+        for(Shop s : shops){
+            s.villager = (Villager) s.loc.getWorld().spawnEntity(s.loc, EntityType.VILLAGER);
+            s.villager.setAdult();
+            s.villager.setCustomName(s.name);
+            s.villager.setCustomNameVisible(true);
+        }
+    }
+ 
+    public void remove(){
+        for(Shop s : shops){
+            if(s.villager != null) s.villager.remove();
+        }
+    }
+ 
+    @SuppressWarnings("unchecked")
+    public void reload(){
+        for(String s : getConfig().getKeys(false)){
+            ConfigurationSection cs = getConfig().getConfigurationSection(s);
+            ArrayList<Category> c = new ArrayList<Category>();
+            if(cs.getConfigurationSection("categories") != null) for(Entry<String, Object> e : cs.getConfigurationSection("categories").getValues(false).entrySet()){
+                Map<String, Object> payload = (Map<String, Object>) e.getValue();
+                ArrayList<Item> items = new ArrayList<Item>();
+                if(cs.getConfigurationSection("categories."+e.getKey()+".items") != null) for(Entry<String, Object> e2 : cs.getConfigurationSection("categories."+e.getKey()+".items").getValues(false).entrySet()){
+                    Map<String, Object> payload2 = (Map<String, Object>) e2.getValue();
+                    items.add(new Item(ItemStack.deserialize((Map<String, Object>) payload2.get("ing1")), ItemStack.deserialize((Map<String, Object>) payload2.get("ing2")), ItemStack.deserialize((Map<String, Object>) payload2.get("result"))));
+                }
+                c.add(new Category(ItemStack.deserialize((Map<String, Object>) payload.get("item")), (String) payload.get("name"), (int) payload.get("slot"), items.toArray(new Item[]{})));
+            }
+            shops.add(new Shop(
+                    cs.getString("name"),
+                    Location.deserialize(
+                            cs.getConfigurationSection("loc")
+                            .getValues(false)),
+                    c.toArray(new Category[]{})
+                    ));
+        }
+        remove();
+        load();
+    }
+ 
+    public void save(){
+        for(String s : getConfig().getKeys(false)){
+            getConfig().set(s, null);
+        }
+        int i = 0;
+        for(Shop s : shops){
+            String path = i+".";
+            getConfig().set(path+"name", s.name);
+            getConfig().set(path+"loc", s.loc.serialize());
+            int ii = 0;
+            for(Category c : s.categories){
+                String cpath = path+"categories."+ii+".";
+                getConfig().set(cpath+"name", c.name);
+                getConfig().set(cpath+"slot", c.slot);
+                getConfig().set(cpath+"item", c.item.serialize());
+                int iii = 0;
+                for(Item item : c.items){
+                    String ipath = cpath+"items."+iii+".";
+                    getConfig().set(ipath+"ing1", item.ing1.serialize());
+                    getConfig().set(ipath+"ing2", item.ing2.serialize());
+                    getConfig().set(ipath+"result", item.result.serialize());
+                    iii++;
+                }
+                ii++;
+            }
+            i++;
+        }
+        saveConfig();
+    }
+   
+    private String getName(String s){
+        String finals = "";
+        s = s.replace("_", " ");
+        for(String str : s.split(" ")){
+            finals += Character.toUpperCase(str.charAt(0))+str.substring(1).toLowerCase()+" ";
+        }
+        return finals.trim();
+    }
+ 
+    @Override
+    public boolean onCommand(CommandSender sender, Command cmd, String str, String[] args){
+        if(!(sender instanceof Player)) return true;
+        Player p = (Player) sender;
+        if(!sender.hasPermission("shop.admin")){
+            sender.sendMessage(ChatColor.RED + "You do not have permission to do that.");
+            return true;
+        }
+        if(args.length >= 1){
+            if(args[0].equalsIgnoreCase("create")){
+                shops.add(new Shop("Untitled", p.getLocation(), new Category[]{}));
+                save();
+                remove();
+                load();
+                sender.sendMessage(ChatColor.GREEN + "Created!");
+                return true;
+            }
+            if(args[0].equalsIgnoreCase("reload")){
+                reload();
+                sender.sendMessage(ChatColor.GREEN+"Reloaded!");
+                return true;
+            }
+            if(args[0].equalsIgnoreCase("paste")){
+                if(copy.get(p.getUniqueId()) == null){
+                    sender.sendMessage(ChatColor.RED + "You do not have anything in your clipboard!");
+                    return true;
+                }
+                Shop sor = copy.get(p.getUniqueId());
+                Shop s = new Shop(sor.name, p.getLocation(), sor.categories); 
+                shops.add(s);
+                save();
+                reload();
+                sender.sendMessage(ChatColor.GREEN+"Pasted!");
+                return true;
+            }
+        }
+        sender.sendMessage(ChatColor.GRAY + "/dtcshop help - Brings up DTCShop menu..");
+        sender.sendMessage(ChatColor.GRAY + "/dtcshop reload - Reloads the shops from the configuration. (WARNING)");
+        sender.sendMessage(ChatColor.GRAY + "/dtcshop create - Creates a new shop.");
+        sender.sendMessage(ChatColor.GRAY + "/dtcshop paste - Pastes a shop.");
+        return true;
+    }
+ 
+    @EventHandler
+    public void onEntityClick(PlayerInteractEntityEvent e){
+        if(e.getRightClicked() instanceof Villager){
+            for(Shop s : shops){
+                if(s.villager.equals((Villager) e.getRightClicked())){
+                    e.setCancelled(true);
+                    if(e.getPlayer().isSneaking() && e.getPlayer().hasPermission("shop.admin")){
+                        Inventory inv = Bukkit.createInventory(null, 18, s.name);
+                        for(Category c : s.categories){
+                            ItemStack is = c.item;
+                            ItemMeta im = is.getItemMeta();
+                            im.setDisplayName(c.name);
+                            is.setItemMeta(im);
+                            inv.setItem(c.slot, is);
+                        }
+                        ItemStack rename = new ItemStack(Material.NAME_TAG);
+                        ItemMeta rm = rename.getItemMeta();
+                        rm.setDisplayName(ChatColor.GREEN + "Rename");
+                        rename.setItemMeta(rm);
+                        ItemStack copy = new ItemStack(Material.ANVIL);
+                        ItemMeta cm = copy.getItemMeta();
+                        cm.setDisplayName(ChatColor.GOLD + "Copy");
+                        copy.setItemMeta(cm);
+                        ItemStack remove = new ItemStack(Material.BARRIER);
+                        ItemMeta rem = remove.getItemMeta();
+                        rem.setDisplayName(ChatColor.RED + "Remove");
+                        remove.setItemMeta(rem);
+                        inv.setItem(11, rename);
+                        inv.setItem(13, copy);
+                        inv.setItem(15, remove);
+                        ItemStack category = new ItemStack(Material.STAINED_GLASS_PANE, 1, (short) 14);
+                        ItemMeta categoryItemMeta = category.getItemMeta();
+                        categoryItemMeta.setDisplayName("EDIT MODE");
+                        category.setItemMeta(categoryItemMeta);
+                        for(int i = 0; i < inv.getSize(); i++){
+                            if(i < 9) continue;
+                            if(inv.getItem(i) == null || inv.getItem(i).getType().equals(Material.AIR)){
+                                inv.setItem(i, category);
+                            }
+                        }
+                        editing.put(e.getPlayer().getUniqueId(), s);
+                        e.getPlayer().openInventory(inv);
+                        return;
+                    }
+                    Inventory inv = Bukkit.createInventory(null, 9, s.name);
+                    for(Category c : s.categories){
+                        System.out.println(c.slot+" ");
+                        ItemStack is = c.item;
+                        ItemMeta im = is.getItemMeta();
+                        im.setDisplayName(c.name);
+                        is.setItemMeta(im);
+                        inv.setItem(c.slot, is);
+                    }
+                    current.put(e.getPlayer().getUniqueId(), s);
+                    e.getPlayer().openInventory(inv);
+                }
+            }
+        }
+    }
+ 
+    @EventHandler
+    public void onInv(InventoryClickEvent e){
+        if(editing.containsKey(e.getWhoClicked().getUniqueId())){
+            e.setCancelled(true);
+            Shop s = editing.get(e.getWhoClicked().getUniqueId());
+            if(e.getSlot() == 11){
+                e.getWhoClicked().closeInventory();
+                e.getWhoClicked().sendMessage(ChatColor.GREEN + "What would you like to rename to? (Supports colors) Type 'exit' to exit.");
+                rename.put(e.getWhoClicked().getUniqueId(), s);
+            }else if(e.getSlot() == 13){
+                e.getWhoClicked().closeInventory();
+                e.getWhoClicked().sendMessage(ChatColor.GREEN + "Copied!");
+                copy.put(e.getWhoClicked().getUniqueId(), s);
+            }else if(e.getSlot() == 15){
+                shops.remove(s);
+                s.villager.remove();
+                save();
+                reload();
+                e.getWhoClicked().closeInventory();
+                e.getWhoClicked().sendMessage(ChatColor.RED + "Deleted!");
+            }else{
+                if(e.getAction().equals(InventoryAction.PICKUP_ALL)){
+                    if(e.getClickedInventory().equals(e.getWhoClicked().getInventory())){
+                        e.setCancelled(false);
+                        return;
+                    }
+                    for(Category c : s.categories){
+                        if(c.slot == e.getSlot()){
+                            Inventory inv = Bukkit.createInventory(null, 9*3, "Trades");
+                            int i = 0;
+                            for(Item it : c.items){
+                                inv.setItem(0+i, it.ing1);
+                                inv.setItem(9+i, it.ing2);
+                                inv.setItem(18+i, it.result);
+                                i++;
+                            }
+                            //open category
+                            e.getWhoClicked().openInventory(inv);
+                        }
+                    }
+                }else{
+                    e.setCancelled(false);
+                }
+            }
+        }
+        if(current.containsKey(e.getWhoClicked().getUniqueId())){
+            e.setCancelled(true);
+            Shop s = current.get(e.getWhoClicked().getUniqueId());
+            for(Category c : s.categories){
+                if(c.item.equals(e.getCurrentItem())){
+                    ArrayList<MerchantRecipe> list = new ArrayList<MerchantRecipe>();
+                    for(Item i : c.items){
+                        MerchantRecipe r = new MerchantRecipe(i.result, Integer.MAX_VALUE);
+                        if(i.ing1 != null) r.addIngredient(i.ing1);
+                        if(i.ing2 != null) r.addIngredient(i.ing2);
+                        list.add(r);
+                    }
+                    Villager vilo = (Villager) s.loc.getWorld().spawnEntity(s.loc, EntityType.VILLAGER);
+                    vilo.setRecipes(list);
+                    e.getWhoClicked().openMerchant(vilo, true);
+                    temp.put(e.getWhoClicked().getUniqueId(), vilo);
+                }
+            }
+        }
+    }
+ 
+    @EventHandler
+    public void onChat(AsyncPlayerChatEvent e){
+        if(rename.containsKey(e.getPlayer().getUniqueId())){
+            e.setCancelled(true);
+            Shop s = rename.get(e.getPlayer().getUniqueId());
+            if(e.getMessage().equalsIgnoreCase("exit")){
+                rename.remove(e.getPlayer().getUniqueId());
+                e.getPlayer().sendMessage(ChatColor.RED + "Exited.");
+                return;
+            }
+            s.name = ChatColor.translateAlternateColorCodes('&', e.getMessage());
+            save();
+            new BukkitRunnable(){ public void run(){ reload(); }}.runTask(this);
+            rename.remove(e.getPlayer().getUniqueId());
+        }
+    }
+ 
+    @EventHandler
+    public void onClose(InventoryCloseEvent e){
+        if(current.containsKey(e.getPlayer().getUniqueId())) current.remove(e.getPlayer().getUniqueId());
+        if(editing.containsKey(e.getPlayer().getUniqueId())){
+            Inventory inv = e.getInventory();
+            Shop s = editing.get(e.getPlayer().getUniqueId());
+            ArrayList<Integer> slots = new ArrayList<Integer>();
+            for(Category c : s.categories){
+                c.item = inv.getItem(c.slot);
+                slots.add(c.slot);
+            }
+            for(int i = 0; i < 9; i++){
+                if(!slots.contains(i)){
+                    if(inv.getItem(i) != null && !inv.getItem(i).getType().equals(Material.AIR)){
+                        List<Category> cs = new ArrayList<Category>();
+                        for(Category css : s.categories) cs.add(css);
+                        ItemStack is = inv.getItem(i);
+                        String name = getName(is.getType().name());
+                        if(is.hasItemMeta() && is.getItemMeta().hasDisplayName()) name = is.getItemMeta().getDisplayName();
+                        cs.add(new Category(inv.getItem(i), name, i, new Item[]{}));
+                        s.categories = cs.toArray(new Category[cs.size()]);
+                    }
+                }
+            }
+            editing.remove(e.getPlayer().getUniqueId());
+        }
+        if(temp.containsKey(e.getPlayer().getUniqueId())){
+            temp.get(e.getPlayer().getUniqueId()).remove();;
+            temp.remove(e.getPlayer().getUniqueId());
+        }
+    }
+ 
+    @EventHandler
+    public void onDamage(EntityDamageEvent e){
+        if(e.getEntity() instanceof Villager){
+            for(Shop s : shops){
+                if(s.villager.equals((Villager) e.getEntity())){
+                    e.setCancelled(true);
+                }
+            }
+        }
+    }
+ 
+    public class Shop {
+ 
+        public String name;
+        public Villager villager;
+        public Location loc;
+        public Category[] categories;
+ 
+        public Shop(String name, Location loc, Category[] categories){
+            this.name = name;
+            this.loc = loc;
+            this.categories = categories;
+        }
+ 
+    }
+ 
+    public class Category{
+ 
+        public ItemStack item;
+        public String name;
+        public int slot;
+        public Item[] items;
+ 
+        public Category(ItemStack item, String name, int slot, Item[] items){
+            this.item = item;
+            this.name = name;
+            this.slot = slot-1;
+            this.items = items;
+        }
+ 
+    }
+ 
+    public class Item {
+        public ItemStack ing1;
+        public ItemStack ing2;
+        public ItemStack result;
+ 
+        public Item(ItemStack ing1, ItemStack ing2, ItemStack result){
+            this.ing1 = ing1;
+            this.ing2 = ing2;
+            this.result = result;
+        }
+ 
+    }
+}
